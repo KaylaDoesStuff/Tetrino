@@ -1,0 +1,22 @@
+arr = 0.0
+das = 100.0
+dcd = 50.0
+sdf = 1.0
+infinite_sdf = true
+key_move_left = "a"
+key_move_right = "d"
+key_soft_drop = "s"
+key_hard_drop = " "
+key_rotate_cw = "l"
+key_rotate_ccw = "j"
+key_rotate_180 = "k"
+key_hold = "f"
+vsync = false
+resolution = [
+    1920,
+    1080,
+]
+aspect_ratio = "16:9"
+fullscreen = true
+background_path = "/home/kayla/Documents/geopurple.png"
+background_dim = 0.800000011920929
