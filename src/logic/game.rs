@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 
 use egui::Color32;
 use rand::seq::SliceRandom;
-use rand::thread_rng;
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 
 use super::piece::Piece;
 use super::settings::Settings;
@@ -39,6 +40,7 @@ pub struct GameState {
     pub last_action_used_kicks: bool,
     pub last_spin_piece: Option<Piece>,
     pub last_spin_mini: bool,
+    pub perfect_clear: bool,
     pub hold_piece: Option<Piece>,
     pub hold_used: bool,
     pub total_lines: u32,
@@ -58,10 +60,15 @@ pub struct GameState {
     pub play_start_time: Option<Instant>,
     pub pause_start: Option<Instant>,
     pub paused_accumulated: Duration,
+    pub rng: StdRng,
 }
 
 impl GameState {
-    pub fn new() -> Self {
+    pub fn new(seed: Option<u64>) -> Self {
+        let rng = match seed {
+            Some(s) => StdRng::seed_from_u64(s),
+            None => StdRng::from_entropy(),
+        };
         Self {
             grid: [[None; 10]; 23],
             bag_queue: VecDeque::new(),
@@ -92,6 +99,7 @@ impl GameState {
             last_action_used_kicks: false,
             last_spin_piece: None,
             last_spin_mini: false,
+            perfect_clear: false,
             hold_piece: None,
             hold_used: false,
             total_lines: 0,
@@ -111,11 +119,12 @@ impl GameState {
             play_start_time: None,
             pause_start: None,
             paused_accumulated: Duration::ZERO,
+            rng,
         }
     }
 
     pub fn reset(&mut self) {
-        *self = Self::new();
+        *self = Self::new(None);
     }
 
     pub fn apply_settings(&mut self, settings: &Settings) {
@@ -128,7 +137,7 @@ impl GameState {
 
     pub fn fill_bag(&mut self) {
         let mut bag = [1, 2, 3, 4, 5, 6, 7];
-        bag.shuffle(&mut thread_rng());
+        bag.shuffle(&mut self.rng);
         self.bag_queue.extend(bag.iter().copied());
     }
 
@@ -200,6 +209,7 @@ impl GameState {
             }
         }
         self.active_pos.1 += dc;
+        self.locking = false;
         self.last_action_was_rotation = false;
         true
     }
@@ -216,6 +226,7 @@ impl GameState {
             }
         }
         self.active_pos.0 += 1;
+        self.locking = false;
         self.last_action_was_rotation = false;
         true
     }
@@ -380,7 +391,7 @@ impl GameState {
             }
         }
 
-        let perfect_clear = self.grid.iter().all(|row| row.iter().all(|c| c.is_none()));
+        self.perfect_clear = self.grid.iter().all(|row| row.iter().all(|c| c.is_none()));
 
         match cleared {
             1 => self.singles += 1,
@@ -440,7 +451,7 @@ impl GameState {
 
         earned += (self.combo * 50 * self.level) as u64;
 
-        if perfect_clear {
+        if self.perfect_clear {
             earned += 3500;
         }
 

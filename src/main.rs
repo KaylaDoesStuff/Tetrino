@@ -3,7 +3,7 @@
 mod logic;
 
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -18,19 +18,30 @@ use logic::game::GameState;
 use logic::graphics::{self, GpuState};
 use logic::input;
 use logic::menu::{self, MenuAction};
+use logic::modes;
+use logic::profile::{self, ProfileData};
 use logic::settings::{self, Settings, SettingsAction, SettingsUiState};
+use logic::lobby::{self, LobbyState, LobbyAction};
+use logic::join::{self, JoinState, JoinAction};
+use logic::network::{self, NetworkHandle, NetworkState};
 
 #[derive(Clone, Copy, PartialEq)]
 enum GameMode {
     Sprint40L,
     Blitz,
+    Versus,
     Custom,
+    Endless,
 }
 
 enum AppScreen {
     Menu,
-    ModeSelect,
+    SinglePlayerModeSelect,
+    MultiplayerModeSelect,
+    VersusLobby,
+    JoinRoom,
     Settings,
+    Profile,
     Countdown { remaining: f32 },
     Playing,
     Paused,
@@ -57,6 +68,9 @@ struct App {
     prev_settings: Settings,
     needs_settings_apply: bool,
     background_texture: Option<egui::TextureHandle>,
+    profile: ProfileData,
+    lobby_state: LobbyState,
+    join_state: JoinState,
     last_frame_start: Instant,
     end_stats_timer: String,
     end_stats_pps: f32,
@@ -75,6 +89,7 @@ struct App {
     end_stats_finesse_faults: u32,
     end_stats_finesse_pct: f32,
     end_stats_total_keys: u32,
+    network_handle: Arc<Mutex<NetworkHandle>>,
 }
 
 impl App {
@@ -86,7 +101,7 @@ impl App {
             egui_ctx: egui::Context::default(),
             egui_winit: None,
             gpu: None,
-            game: GameState::new(),
+            game: GameState::new(None),
             vsync,
             frame_times: VecDeque::new(),
             frame_count: 0,
@@ -100,6 +115,9 @@ impl App {
             settings_ui: SettingsUiState::default(),
             needs_settings_apply: false,
             background_texture: None,
+            profile: ProfileData::placeholder(),
+            lobby_state: LobbyState::default(),
+            join_state: JoinState::default(),
             last_frame_start: Instant::now(),
             end_stats_timer: String::new(),
             end_stats_pps: 0.0,
@@ -118,6 +136,7 @@ impl App {
             end_stats_finesse_faults: 0,
             end_stats_finesse_pct: 0.0,
             end_stats_total_keys: 0,
+            network_handle: Arc::new(Mutex::new(NetworkHandle::new())),
         };
         app.load_background_texture();
         app
@@ -141,6 +160,15 @@ impl App {
         self.end_stats_finesse_faults = 0;
         self.end_stats_finesse_pct = 0.0;
         self.end_stats_total_keys = 0;
+    }
+
+    fn start_game(&mut self) {
+        self.game.reset();
+        self.game.apply_settings(&self.settings);
+        self.game.fill_bag();
+        self.game.fill_bag();
+        self.reset_end_stats();
+        self.screen = AppScreen::Countdown { remaining: 3.0 };
     }
 
     fn apply_settings(&mut self) {
@@ -266,8 +294,11 @@ impl ApplicationHandler for App {
                         let sf = self.window.as_ref().map(|w| w.scale_factor() as f32).unwrap_or(1.0);
                         let buttons = menu::build_buttons(surf_w, surf_h, sf);
                         match menu::handle_menu_click(pos, &buttons) {
-                            MenuAction::Play => {
-                                self.screen = AppScreen::ModeSelect;
+                            MenuAction::SinglePlayer => {
+                                self.screen = AppScreen::SinglePlayerModeSelect;
+                            }
+                            MenuAction::Multiplayer => {
+                                self.screen = AppScreen::MultiplayerModeSelect;
                             }
                             MenuAction::Settings => {
                                 self.prev_settings = self.settings.clone();
@@ -320,7 +351,7 @@ impl ApplicationHandler for App {
                             self.screen = AppScreen::Menu;
                         }
                     }
-                } else if let AppScreen::ModeSelect = &self.screen {
+                } else if let AppScreen::SinglePlayerModeSelect = &self.screen {
                     if let Some(pos) = self.mouse_pos {
                         let (surf_w, surf_h) = if let Some(gpu) = &self.gpu {
                             (gpu.surface_config.width as f32, gpu.surface_config.height as f32)
@@ -328,36 +359,60 @@ impl ApplicationHandler for App {
                             return;
                         };
                         let sf = self.window.as_ref().map(|w| w.scale_factor() as f32).unwrap_or(1.0);
-                        let buttons = menu::build_mode_buttons(surf_w, surf_h, sf);
-                        match menu::handle_mode_click(pos, &buttons) {
+                        let buttons = menu::build_single_player_buttons(surf_w, surf_h, sf);
+                        match menu::handle_single_player_click(pos, &buttons) {
                             menu::ModeAction::Sprint40L => {
                                 self.game_mode = GameMode::Sprint40L;
-                                self.game.reset();
-                                self.game.apply_settings(&self.settings);
-                                self.game.fill_bag();
-                                self.game.fill_bag();
-                                self.reset_end_stats();
-                                self.screen = AppScreen::Countdown { remaining: 3.0 };
+                                self.start_game();
                             }
                             menu::ModeAction::Blitz => {
                                 self.game_mode = GameMode::Blitz;
-                                self.game.reset();
-                                self.game.apply_settings(&self.settings);
-                                self.game.fill_bag();
-                                self.game.fill_bag();
-                                self.reset_end_stats();
-                                self.screen = AppScreen::Countdown { remaining: 3.0 };
+                                self.start_game();
                             }
                             menu::ModeAction::Custom => {
                                 self.game_mode = GameMode::Custom;
-                                self.game.reset();
-                                self.game.apply_settings(&self.settings);
-                                self.game.fill_bag();
-                                self.game.fill_bag();
-                                self.reset_end_stats();
-                                self.screen = AppScreen::Countdown { remaining: 3.0 };
+                                self.start_game();
+                            }
+                            menu::ModeAction::Endless => {
+                                self.game_mode = GameMode::Endless;
+                                self.start_game();
                             }
                             menu::ModeAction::None => {}
+                            _ => {}
+                        }
+                    }
+                } else if let AppScreen::MultiplayerModeSelect = &self.screen {
+                    if let Some(pos) = self.mouse_pos {
+                        let (surf_w, surf_h) = if let Some(gpu) = &self.gpu {
+                            (gpu.surface_config.width as f32, gpu.surface_config.height as f32)
+                        } else {
+                            return;
+                        };
+                        let sf = self.window.as_ref().map(|w| w.scale_factor() as f32).unwrap_or(1.0);
+                        let buttons = menu::build_multiplayer_buttons(surf_w, surf_h, sf);
+                        match menu::handle_multiplayer_click(pos, &buttons) {
+                            menu::ModeAction::Versus => {
+                                self.game_mode = GameMode::Versus;
+                                self.lobby_state.combined_code.clear();
+                                let handle = self.network_handle.clone();
+                                let code = self.lobby_state.room_code.clone();
+                                network::detect_public_ip(handle.clone());
+                                network::start_host(handle, code);
+                                self.screen = AppScreen::VersusLobby;
+                            }
+                            menu::ModeAction::Join => {
+                                self.join_state.code.clear();
+                                self.join_state.error_message = None;
+                                self.screen = AppScreen::JoinRoom;
+                            }
+                            menu::ModeAction::Leaderboards => {
+                                // TODO: implement leaderboards screen
+                            }
+                            menu::ModeAction::Profile => {
+                                self.screen = AppScreen::Profile;
+                            }
+                            menu::ModeAction::None => {}
+                            _ => {}
                         }
                     }
                 }
@@ -393,14 +448,35 @@ impl ApplicationHandler for App {
                         if let (Key::Named(NamedKey::Enter), ElementState::Pressed) =
                             (&logical_key, state)
                         {
-                            self.screen = AppScreen::ModeSelect;
+                            self.screen = AppScreen::SinglePlayerModeSelect;
                         }
                     }
-                    AppScreen::ModeSelect => {
+                    AppScreen::SinglePlayerModeSelect | AppScreen::MultiplayerModeSelect => {
                         if let (Key::Named(NamedKey::Escape), ElementState::Pressed) =
                             (&logical_key, state)
                         {
                             self.screen = AppScreen::Menu;
+                        }
+                    }
+                    AppScreen::Profile => {
+                        if let (Key::Named(NamedKey::Escape), ElementState::Pressed) =
+                            (&logical_key, state)
+                        {
+                            self.screen = AppScreen::MultiplayerModeSelect;
+                        }
+                    }
+                    AppScreen::VersusLobby => {
+                        if let (Key::Named(NamedKey::Escape), ElementState::Pressed) =
+                            (&logical_key, state)
+                        {
+                            self.screen = AppScreen::MultiplayerModeSelect;
+                        }
+                    }
+                    AppScreen::JoinRoom => {
+                        if let (Key::Named(NamedKey::Escape), ElementState::Pressed) =
+                            (&logical_key, state)
+                        {
+                            self.screen = AppScreen::MultiplayerModeSelect;
                         }
                     }
                     AppScreen::Settings => {
@@ -517,8 +593,12 @@ impl ApplicationHandler for App {
                             menu::render_menu(window, &self.egui_ctx, egui_winit, gpu, &self.background_texture, self.settings.background_dim);
                             window.request_redraw();
                         }
-                        AppScreen::ModeSelect => {
-                            menu::render_mode_select(window, &self.egui_ctx, egui_winit, gpu, &self.background_texture, self.settings.background_dim);
+                        AppScreen::SinglePlayerModeSelect => {
+                            menu::render_single_player_mode_select(window, &self.egui_ctx, egui_winit, gpu, &self.background_texture, self.settings.background_dim);
+                            window.request_redraw();
+                        }
+                        AppScreen::MultiplayerModeSelect => {
+                            menu::render_multiplayer_mode_select(window, &self.egui_ctx, egui_winit, gpu, &self.background_texture, self.settings.background_dim);
                             window.request_redraw();
                         }
                         AppScreen::Settings => {
@@ -539,6 +619,95 @@ impl ApplicationHandler for App {
                                 self.needs_settings_apply = true;
                             }
                             window.request_redraw();
+                        }
+                        AppScreen::Profile => {
+                            let action = profile::render_profile(
+                                &self.egui_ctx,
+                                &self.profile,
+                                window,
+                                egui_winit,
+                                gpu,
+                                &self.background_texture,
+                                self.settings.background_dim,
+                            );
+                            if let profile::ProfileAction::Back = action {
+                                self.screen = AppScreen::MultiplayerModeSelect;
+                            }
+                            window.request_redraw();
+                        }
+                        AppScreen::VersusLobby => {
+                            {
+                                let handle = self.network_handle.lock().unwrap();
+                                match handle.get_state() {
+                                    NetworkState::Hosting { ip } => {
+                                        if self.lobby_state.combined_code.is_empty() {
+                                            if let Some(ip) = &ip {
+                                                self.lobby_state.combined_code = match network::encode_room_code(
+                                                    ip,
+                                                    &self.lobby_state.room_code,
+                                                ) {
+                                                    Ok(code) => code,
+                                                    Err(e) => format!("Error: {}", e),
+                                                };
+                                            }
+                                        }
+                                    }
+                                    NetworkState::Connected => {
+                                        if self.lobby_state.combined_code.is_empty() {
+                                            self.lobby_state.combined_code = "Connected!".into();
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            let action = lobby::render_lobby(
+                                &self.egui_ctx,
+                                &mut self.lobby_state,
+                                window,
+                                egui_winit,
+                                gpu,
+                                &self.background_texture,
+                                self.settings.background_dim,
+                            );
+                            window.request_redraw();
+                            match action {
+                                LobbyAction::Back => {
+                                    self.network_handle.lock().unwrap().shutdown();
+                                    self.screen = AppScreen::MultiplayerModeSelect;
+                                }
+                                LobbyAction::Start => {
+                                    self.start_game();
+                                }
+                                LobbyAction::None => {}
+                            }
+                        }
+                        AppScreen::JoinRoom => {
+                            let action = join::render_join(
+                                &self.egui_ctx,
+                                &mut self.join_state,
+                                window,
+                                egui_winit,
+                                gpu,
+                                &self.background_texture,
+                                self.settings.background_dim,
+                            );
+                            window.request_redraw();
+                            match action {
+                                JoinAction::Back => {
+                                    self.screen = AppScreen::MultiplayerModeSelect;
+                                }
+                                JoinAction::Join(ip, code) => {
+                                    let handle = self.network_handle.clone();
+                                    network::connect_to_host(handle, ip, code);
+                                    self.screen = AppScreen::VersusLobby;
+                                }
+                                JoinAction::None => {
+                                    let handle = self.network_handle.lock().unwrap();
+                                    if let NetworkState::Error(e) = handle.get_state() {
+                                        self.join_state.error_message = Some(e);
+                                    }
+                                }
+                            }
                         }
                         AppScreen::Countdown { remaining } => {
                             let elapsed = self.game.last_tick_time.elapsed().as_secs_f32();
@@ -575,17 +744,11 @@ impl ApplicationHandler for App {
                             self.game.last_tick_time = Instant::now();
                             self.game.tick(elapsed);
                             let mode_game_over = match self.game_mode {
-                                GameMode::Sprint40L => self.game.total_lines >= 40,
-                                GameMode::Blitz => {
-                                    if let Some(start) = self.game.play_start_time {
-                                        let pause_adjust = self.game.pause_start.map(|ps| ps.elapsed()).unwrap_or(Duration::ZERO);
-                                        let total_elapsed = start.elapsed().saturating_sub(self.game.paused_accumulated + pause_adjust);
-                                        total_elapsed.as_secs_f32() >= 120.0
-                                    } else {
-                                        false
-                                    }
-                                }
-                                GameMode::Custom => false,
+                                GameMode::Sprint40L => modes::sprint40l::check_game_over(&self.game),
+                                GameMode::Blitz => modes::blitz::check_game_over(&self.game),
+                                GameMode::Versus => modes::versus::check_game_over(&self.game),
+                                GameMode::Custom => modes::custom::check_game_over(&self.game),
+                                GameMode::Endless => modes::endless::check_game_over(&self.game),
                             };
                             if self.game.is_game_over() || mode_game_over {
                                 if let Some(start) = self.game.play_start_time {
@@ -698,8 +861,11 @@ impl ApplicationHandler for App {
                         }
                         AppScreen::EndScreen => {
                             let box_number = match self.game_mode {
-                                GameMode::Sprint40L => self.end_stats_timer.clone(),
-                                GameMode::Blitz | GameMode::Custom => self.end_stats_score.to_string(),
+                                GameMode::Sprint40L => modes::sprint40l::primary_stat(&self.game),
+                                GameMode::Blitz => modes::blitz::primary_stat(&self.game),
+                                GameMode::Versus => modes::versus::primary_stat(&self.game),
+                                GameMode::Custom => modes::custom::primary_stat(&self.game),
+                                GameMode::Endless => modes::endless::primary_stat(&self.game),
                             };
                             graphics::render_end_screen(
                                 window,

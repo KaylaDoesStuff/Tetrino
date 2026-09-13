@@ -1,8 +1,8 @@
-arr = 0.0
+arr = 1.0
 das = 100.0
 dcd = 50.0
 sdf = 1.0
-infinite_sdf = true
+infinite_sdf = false
 key_move_left = "a"
 key_move_right = "d"
 key_soft_drop = "s"
@@ -11,12 +11,12 @@ key_rotate_cw = "l"
 key_rotate_ccw = "j"
 key_rotate_180 = "k"
 key_hold = "f"
-vsync = false
+vsync = true
 resolution = [
-    1920,
-    1080,
+    1280,
+    720,
 ]
 aspect_ratio = "16:9"
-fullscreen = true
-background_path = "/home/kayla/Documents/geopurple.png"
-background_dim = 0.800000011920929
+fullscreen = false
+background_dim = 0.0
+show_both_boards = true

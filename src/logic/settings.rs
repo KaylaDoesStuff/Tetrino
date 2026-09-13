@@ -91,6 +91,7 @@ pub struct Settings {
     pub fullscreen: bool,
     pub background_path: Option<String>,
     pub background_dim: f32,
+    pub show_both_boards: bool,
 }
 
 impl Default for Settings {
@@ -118,6 +119,7 @@ impl Default for Settings {
             fullscreen: false,
             background_path: None,
             background_dim: 0.0,
+            show_both_boards: true,
         }
     }
 }
@@ -415,6 +417,17 @@ pub fn render_settings(
                             ui.add(egui::Slider::new(&mut settings.background_dim, 0.0..=1.0).show_value(false));
                             ui.label(RichText::new(format!("{}%", (settings.background_dim * 100.0) as u32)).font(FontId::proportional(16.0)).color(Color32::from_rgb(200, 200, 200)));
                         });
+
+                        ui.add_space(24.0);
+
+                        ui.label(RichText::new("Multiplayer").font(FontId::proportional(24.0)).color(header_color));
+                        ui.add_space(4.0);
+                        ui.checkbox(
+                            &mut settings.show_both_boards,
+                            RichText::new("Show both player boards during Versus")
+                                .font(FontId::proportional(16.0))
+                                .color(Color32::WHITE),
+                        );
 
                         ui.add_space(24.0);
 
